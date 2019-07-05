@@ -63,6 +63,11 @@
 (defimplementation getpid ()
   0)
 
+;;;; Packages
+
+(defimplementation package-local-nicknames (package)
+  (sys.int::package-local-nicknames package))
+
 ;;;; Compilation
 
 (defun signal-compiler-condition (condition severity)

@@ -104,7 +104,7 @@
 (defimplementation find-external-format (coding-system)
   (if (or (equal coding-system "utf-8")
           (equal coding-system "utf-8-unix"))
-      :default
+      :utf-8
       nil))
 
 ;;;; Debugging

@@ -15,18 +15,7 @@
 
 ;;; swank-mop
 
-(import-swank-mop-symbols :mezzano.clos '(:class-default-initargs
-                                          :class-direct-default-initargs
-                                          :specializer-direct-methods
-                                          :generic-function-declarations))
-
-(defun swank-mop:specializer-direct-methods (obj)
-  (declare (ignore obj))
-  '())
-
-(defun swank-mop:generic-function-declarations (gf)
-  (declare (ignore gf))
-  '())
+(import-swank-mop-symbols :mezzano.clos '())
 
 (defimplementation gray-package-name ()
   "MEZZANO.GRAY")

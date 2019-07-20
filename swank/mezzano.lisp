@@ -228,9 +228,9 @@
       (try-fn `(setf name))
       (try-fn `(sys.int::cas name))
       (when (and (symbolp name)
-                 (get name 'sys.int::setf-expander))
+                 (gethash name sys.int::*setf-expanders*))
         (frob-fn `(define-setf-expander ,name)
-                 (get name 'sys.int::setf-expander)))
+                 (gethash name sys.int::*setf-expanders*)))
       (when (and (symbolp name)
                  (macro-function name))
         (frob-fn `(defmacro ,name)
@@ -326,7 +326,7 @@
                 (ignore-errors (fdefinition name)))))
     (cond
       (macro
-       (get name 'sys.int::macro-lambda-list))
+       (sys.int::macro-function-lambda-list name))
       (fn
        (cond
          ((typep fn 'mezzano.clos:standard-generic-function)
@@ -340,12 +340,8 @@
    (sys.int::function-debug-info function)))
 
 (defimplementation type-specifier-p (symbol)
-  (cond
-    ((or (get symbol 'sys.int::type-expander)
-         (get symbol 'sys.int::compound-type)
-         (get symbol 'sys.int::type-symbol))
-     t)
-    (t :not-available)))
+  (or (sys.int::type-specifier-p symbol)
+      :not-available))
 
 (defimplementation function-name (function)
   (sys.int::function-name function))
@@ -372,7 +368,7 @@
     (when (fboundp `(setf ,symbol))
       (setf (getf result :setf)
             (function-docstring `(setf ,symbol))))
-    (when (get symbol 'sys.int::setf-expander)
+    (when (gethash symbol sys.int::*setf-expanders*)
       (setf (getf result :setf) nil))
     (when (special-operator-p symbol)
       (setf (getf result :special-operator) nil))

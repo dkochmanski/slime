@@ -196,6 +196,12 @@
             `("Class: " (:value ,class) (:newline)
               ,@(all-slots-for-inspector object))))
 
+#+mezzano
+(defmethod emacs-inspect ((object structure-object))
+  (let ((class (class-of object)))
+            `("Class: " (:value ,class) (:newline)
+              ,@(all-slots-for-inspector object))))
+
 (defvar *gf-method-getter* 'methods-by-applicability
   "This function is called to get the methods of a generic function.
 The default returns the method sorted by applicability.
@@ -280,7 +286,9 @@ See `methods-by-applicability'.")
 
 (defgeneric all-slots-for-inspector (object))
 
-(defmethod all-slots-for-inspector ((object standard-object))
+(defun all-slots-for-inspector-mop (object)
+  "Common implementation of all-slots-for-inspector for objects that can
+have their slots retrieved via the MOP."
   (let* ((class           (class-of object))
          (direct-slots    (swank-mop:class-direct-slots class))
          (effective-slots (swank-mop:class-slots class))
@@ -365,6 +373,13 @@ See `methods-by-applicability'.")
                            class object (nth idx effective-slots))))
                :refreshp t)
       (:newline))))
+
+(defmethod all-slots-for-inspector ((object standard-object))
+  (all-slots-for-inspector-mop object))
+
+#+mezzano
+(defmethod all-slots-for-inspector ((object structure-object))
+  (all-slots-for-inspector-mop object))
 
 (defun list-all-slots-by-inheritance (checklist object class effective-slots
                                       direct-slots longest-slot-name-length)

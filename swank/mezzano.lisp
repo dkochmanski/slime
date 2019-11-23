@@ -15,33 +15,40 @@
 
 ;;; swank-mop
 
-(import-swank-mop-symbols :mezzano.clos '())
+(import-swank-mop-symbols :mezzano.clos '(:slot-definition-documentation))
+
+(defun swank-mop:slot-definition-documentation (slot)
+  (documentation slot t))
 
 (defimplementation gray-package-name ()
   "MEZZANO.GRAY")
 
 ;;;; TCP server
 
-(defclass listen-socket ()
-  ((%listener :initarg :listener)))
-
 (defimplementation create-socket (host port &key backlog)
-  (make-instance 'listen-socket
-                 :listener (mezzano.network.tcp:tcp-listen
-                            host
-                            port
-                            :backlog (or backlog 10))))
+  (mezzano.network.tcp:tcp-listen
+   host port
+   :backlog (or backlog 10)))
 
 (defimplementation local-port (socket)
-  (mezzano.network.tcp:tcp-listener-local-port (slot-value socket '%listener)))
+  (nth-value 1 (mezzano.network:local-endpoint socket)))
 
 (defimplementation close-socket (socket)
-  (mezzano.network.tcp:close-tcp-listener (slot-value socket '%listener)))
+  (mezzano.network.tcp:close-tcp-listener socket))
 
 (defimplementation accept-connection (socket &key external-format
                                              buffering timeout)
-  (declare (ignore external-format buffering timeout))
-  (mezzano.network.tcp:tcp-accept (slot-value socket '%listener)))
+  (declare (ignore buffering))
+  (when (not (mezzano.sync:wait-for-objects-with-timeout timeout socket))
+    ;; It's not really clear what a timeout should do, this is what SCL does.
+    ;; None of the other implementations support it.
+    (error "Timeout accepting connection on socket: ~S~%" socket))
+  (if external-format
+      (mezzano.network.tcp:tcp-accept socket
+                                      :element-type 'character
+                                      :external-format external-format)
+      (mezzano.network.tcp:tcp-accept socket
+                                      :element-type '(unsigned-byte 8))))
 
 (defimplementation preferred-communication-style ()
   :spawn)
@@ -604,96 +611,3 @@
   (label-value-line*
    (:name (sys.int::function-reference-name o))
    (:function (sys.int::function-reference-function o))))
-
-(defmethod emacs-inspect ((object structure-object))
-  (let ((class (class-of object)))
-    `("Class: " (:value ,class) (:newline)
-                ,@(swank::all-slots-for-inspector object))))
-
-(in-package :swank)
-
-(defmethod all-slots-for-inspector ((object structure-object))
-  (let* ((class           (class-of object))
-         (direct-slots    (swank-mop:class-direct-slots class))
-         (effective-slots (swank-mop:class-slots class))
-         (longest-slot-name-length
-          (loop for slot :in effective-slots
-                maximize (length (symbol-name
-                                  (swank-mop:slot-definition-name slot)))))
-         (checklist
-          (reinitialize-checklist
-           (ensure-istate-metadata object :checklist
-                                   (make-checklist (length effective-slots)))))
-         (grouping-kind
-          ;; We box the value so we can re-set it.
-          (ensure-istate-metadata object :grouping-kind
-                                  (box *inspector-slots-default-grouping*)))
-         (sort-order
-          (ensure-istate-metadata object :sort-order
-                                  (box *inspector-slots-default-order*)))
-         (sort-predicate (ecase (ref sort-order)
-                           (:alphabetically #'string<)
-                           (:unsorted (constantly nil))))
-         (sorted-slots (sort (copy-seq effective-slots)
-                             sort-predicate
-                             :key #'swank-mop:slot-definition-name))
-         (effective-slots
-          (ecase (ref grouping-kind)
-            (:all sorted-slots)
-            (:inheritance (stable-sort-by-inheritance sorted-slots
-                                                      class sort-predicate)))))
-    `("--------------------"
-      (:newline)
-      " Group slots by inheritance "
-      (:action ,(ecase (ref grouping-kind)
-                       (:all "[ ]")
-                       (:inheritance "[X]"))
-               ,(lambda ()
-                        ;; We have to do this as the order of slots will
-                        ;; be sorted differently.
-                        (fill (checklist.buttons checklist) nil)
-                        (setf (ref grouping-kind)
-                              (ecase (ref grouping-kind)
-                                (:all :inheritance)
-                                (:inheritance :all))))
-               :refreshp t)
-      (:newline)
-      " Sort slots alphabetically  "
-      (:action ,(ecase (ref sort-order)
-                       (:unsorted "[ ]")
-                       (:alphabetically "[X]"))
-               ,(lambda ()
-                        (fill (checklist.buttons checklist) nil)
-                        (setf (ref sort-order)
-                              (ecase (ref sort-order)
-                                (:unsorted :alphabetically)
-                                (:alphabetically :unsorted))))
-               :refreshp t)
-      (:newline)
-      ,@ (case (ref grouping-kind)
-           (:all
-            `((:newline)
-              "All Slots:"
-              (:newline)
-              ,@(make-slot-listing checklist object class
-                                   effective-slots direct-slots
-                                   longest-slot-name-length)))
-           (:inheritance
-            (list-all-slots-by-inheritance checklist object class
-                                           effective-slots direct-slots
-                                           longest-slot-name-length)))
-      (:newline)
-      (:action "[set value]"
-               ,(lambda ()
-                        (do-checklist (idx checklist)
-                          (query-and-set-slot class object
-                                              (nth idx effective-slots))))
-               :refreshp t)
-      "  "
-      (:action "[make unbound]"
-               ,(lambda ()
-                        (do-checklist (idx checklist)
-                          (swank-mop:slot-makunbound-using-class
-                           class object (nth idx effective-slots))))
-               :refreshp t)
-      (:newline))))

@@ -62,7 +62,7 @@
 ;;;; Packages
 
 (defimplementation package-local-nicknames (package)
-  (sys.int::package-local-nicknames package))
+  (mezzano.extensions:package-local-nicknames package))
 
 ;;;; Compilation
 
@@ -92,7 +92,7 @@
   (let* ((*load-pathname* (ignore-errors (pathname filename)))
          (*load-truename* (when *load-pathname*
                             (ignore-errors (truename *load-pathname*))))
-         (sys.int::*top-level-form-number* `(:position ,position)))
+         (mezzano.internals::*top-level-form-number* `(:position ,position)))
     (with-compilation-hooks ()
       (eval (read-from-string (concatenate 'string "(progn " string " )")))))
   t)
@@ -100,6 +100,7 @@
 (defimplementation swank-compile-file (input-file output-file load-p
                                                   external-format
                                                   &key policy)
+  (declare (ignore policy))
   (with-compilation-hooks ()
     (multiple-value-prog1
         (compile-file input-file
@@ -125,11 +126,9 @@
 
 (defimplementation call-with-debugging-environment (debugger-loop-fn)
   (let ((*current-backtrace* '()))
-    (let ((prev-fp nil))
-      (sys.int::map-backtrace
-       (lambda (i fp)
-         (push (list (1- i) fp prev-fp) *current-backtrace*)
-         (setf prev-fp fp))))
+    (mezzano.debug:map-backtrace
+     (lambda (frame)
+       (push frame *current-backtrace*)))
     (setf *current-backtrace* (reverse *current-backtrace*))
     ;; Drop the topmost frame, which is finished call to MAP-BACKTRACE.
     (pop *current-backtrace*)
@@ -141,32 +140,33 @@
   (subseq *current-backtrace* start end))
 
 (defimplementation print-frame (frame stream)
-  (format stream "~S" (sys.int::function-from-frame frame)))
+  (mezzano.debug:print-frame frame :stream stream))
 
 (defimplementation frame-source-location (frame-number)
   (let* ((frame (nth frame-number *current-backtrace*))
-         (fn (sys.int::function-from-frame frame)))
+         (fn (mezzano.debug:frame-function frame)))
     (function-location fn)))
 
 (defimplementation frame-locals (frame-number)
   (loop
      with frame = (nth frame-number *current-backtrace*)
-     for (name id location repr) in (sys.int::frame-locals frame)
-     collect (list :name name
+     for id = 0
+     for var in (mezzano.debug:frame-local-variables frame)
+     collect (list :name (mezzano.debug:local-variable-name var)
                    :id id
-                   :value (sys.int::read-frame-slot frame location repr))))
+                   :value (multiple-value-bind (value validp)
+                              (mezzano.debug:local-variable-value frame var)
+                            (if validp value :<not-available>)))))
 
 (defimplementation frame-var-value (frame-number var-id)
   (let* ((frame (nth frame-number *current-backtrace*))
-         (locals (sys.int::frame-locals frame))
-         (info (nth var-id locals)))
-    (if info
-        (destructuring-bind (name id location repr)
-            info
-          (declare (ignore id))
-          (values (sys.int::read-frame-slot frame location repr) name))
-        (error "Invalid variable id ~D for frame number ~D."
-               var-id frame-number))))
+         (locals (mezzano.debug:frame-local-variables frame))
+         (var (nth var-id locals)))
+    (assert var () "Invalid variable id ~D for frame number ~D."
+             var-id frame-number)
+    (multiple-value-bind (value validp)
+        (mezzano.debug:local-variable-value frame var)
+      (if validp value :<not-available>))))
 
 ;;;; Definition finding
 
@@ -183,11 +183,9 @@
         (make-location `(:file ,(enough-namestring s default))
                        `(:position ,(1+ (file-position s))))))))
 
-(defun function-location (function)
-  "Return a location object for FUNCTION."
-  (let* ((info (sys.int::function-debug-info function))
-         (pathname (sys.int::debug-info-source-pathname info))
-         (tlf (sys.int::debug-info-source-top-level-form-number info)))
+(defun mezzano-location->swank-location (location)
+  (let ((pathname (mezzano.debug:source-location-file location))
+        (tlf (mezzano.debug:source-location-top-level-form-number location)))
     (cond ((and (consp tlf)
                 (eql (first tlf) :position))
            (let ((default (make-pathname :host (pathname-host pathname))))
@@ -195,6 +193,11 @@
                             `(:position ,(second tlf)))))
           (t
            (top-level-form-position pathname tlf)))))
+
+(defun function-location (function)
+  "Return a location object for FUNCTION."
+  (mezzano-location->swank-location
+   (mezzano.debug:function-source-location function)))
 
 (defun method-definition-name (name method)
   `(defmethod ,name
@@ -233,11 +236,11 @@
                         (compiler-macro-function name))))))
       (try-fn name)
       (try-fn `(setf name))
-      (try-fn `(sys.int::cas name))
+      (try-fn `(mezzano.extensions:cas name))
       (when (and (symbolp name)
-                 (gethash name sys.int::*setf-expanders*))
+                 (mezzano.extensions:setf-expander-function name))
         (frob-fn `(define-setf-expander ,name)
-                 (gethash name sys.int::*setf-expanders*)))
+                 (mezzano.extensions:setf-expander-function name)))
       (when (and (symbolp name)
                  (macro-function name))
         (frob-fn `(defmacro ,name)
@@ -247,81 +250,15 @@
 ;;;; XREF
 ;;; Simpler variants.
 
-(defun find-all-frefs ()
-  (let ((frefs (make-array 500 :adjustable t :fill-pointer 0))
-        (keep-going t))
-    (loop
-       (when (not keep-going)
-         (return))
-       (adjust-array frefs (* (array-dimension frefs 0) 2))
-       (setf keep-going nil
-             (fill-pointer frefs) 0)
-       ;; Walk the wired area looking for FREFs.
-       (sys.int::walk-area
-        :wired
-        (lambda (object address size)
-          (when (sys.int::function-reference-p object)
-            (when (not (vector-push object frefs))
-              (setf keep-going t))))))
-    (remove-duplicates (coerce frefs 'list))))
-
 (defimplementation list-callers (function-name)
-  (let ((fref-for-fn (sys.int::function-reference function-name))
-        (callers '()))
-    (loop
-       for fref in (find-all-frefs)
-       for fn = (sys.int::function-reference-function fref)
-       for name = (sys.int::function-reference-name fref)
-       when fn
-       do
-         (cond ((typep fn 'standard-generic-function)
-                (dolist (m (mezzano.clos:generic-function-methods fn))
-                  (let* ((mf (mezzano.clos:method-function m))
-                         (mf-frefs (get-all-frefs-in-function mf)))
-                    (when (member fref-for-fn mf-frefs)
-                      (push `((defmethod ,name
-                                  ,@(mezzano.clos:method-qualifiers m)
-                                ,(mapcar #'specializer-name
-                                         (mezzano.clos:method-specializers m)))
-                              ,(function-location mf))
-                            callers)))))
-               ((member fref-for-fn
-                        (get-all-frefs-in-function fn))
-                (push `((defun ,name) ,(function-location fn)) callers))))
-    callers))
-
-(defun specializer-name (specializer)
-  (if (typep specializer 'standard-class)
-      (mezzano.clos:class-name specializer)
-      specializer))
-
-(defun get-all-frefs-in-function (function)
-  (when (sys.int::funcallable-instance-p function)
-    (setf function (sys.int::funcallable-instance-function function)))
-  (when (sys.int::closure-p function)
-    (setf function (sys.int::%closure-function function)))
   (loop
-     for i below (sys.int::function-pool-size function)
-     for entry = (sys.int::function-pool-object function i)
-     when (sys.int::function-reference-p entry)
-     collect entry
-     when (compiled-function-p entry) ; closures
-     append (get-all-frefs-in-function entry)))
+     for (dspec location) in (mezzano.debug:list-callers function-name)
+     collect (list dspec (mezzano-location->swank-location location))))
 
 (defimplementation list-callees (function-name)
-  (let* ((fn (fdefinition function-name))
-         ;; Grovel around in the function's constant pool looking for
-         ;; function-references.  These may be for #', but they're
-         ;; probably going to be for normal calls.
-         ;; TODO: This doesn't work well on interpreted functions or
-         ;; funcallable instances.
-         (callees (remove-duplicates (get-all-frefs-in-function fn))))
-    (loop
-       for fref in callees
-       for name = (sys.int::function-reference-name fref)
-       for fn = (sys.int::function-reference-function fref)
-       when fn
-       collect `((defun ,name) ,(function-location fn)))))
+  (loop
+     for (dspec location) in (mezzano.debug:list-callees function-name)
+     collect (list dspec (mezzano-location->swank-location location))))
 
 ;;;; Documentation
 
@@ -333,25 +270,21 @@
                 (ignore-errors (fdefinition name)))))
     (cond
       (macro
-       (sys.int::macro-function-lambda-list name))
+       (mezzano.debug:macro-function-lambda-list name))
       (fn
        (cond
          ((typep fn 'mezzano.clos:standard-generic-function)
           (mezzano.clos:generic-function-lambda-list fn))
          (t
-          (function-lambda-list fn))))
+          (mezzano.debug:function-lambda-list fn))))
       (t :not-available))))
 
-(defun function-lambda-list (function)
-  (sys.int::debug-info-lambda-list
-   (sys.int::function-debug-info function)))
-
 (defimplementation type-specifier-p (symbol)
-  (or (sys.int::type-specifier-p symbol)
+  (or (mezzano.internals::type-specifier-p symbol)
       :not-available))
 
 (defimplementation function-name (function)
-  (sys.int::function-name function))
+  (mezzano.debug:function-name function))
 
 (defimplementation valid-function-name-p (form)
   "Is FORM syntactically valid to name a function?
@@ -361,38 +294,38 @@
     (or (symbolp form)
         (and (consp form) (length=2 form)
              (or (eq (first form) 'setf)
-                 (eq (first form) 'sys.int::cas))
+                 (eq (first form) 'mezzano.extensions:cas))
              (symbolp (second form))))))
 
 (defimplementation describe-symbol-for-emacs (symbol)
   (let ((result '()))
     (when (boundp symbol)
-      (setf (getf result :variable) nil))
+      (setf (getf result :variable) (documentation symbol 'variable)))
     (when (and (fboundp symbol)
                (not (macro-function symbol)))
       (setf (getf result :function)
-            (function-docstring symbol)))
-    (when (fboundp `(setf ,symbol))
+            (documentation symbol 'function)))
+    (when (or (fboundp `(setf ,symbol))
+              (mezzano.extensions:setf-expander-function symbol))
       (setf (getf result :setf)
-            (function-docstring `(setf ,symbol))))
-    (when (gethash symbol sys.int::*setf-expanders*)
-      (setf (getf result :setf) nil))
+            (documentation symbol 'setf)))
     (when (special-operator-p symbol)
-      (setf (getf result :special-operator) nil))
+      (setf (getf result :special-operator)
+            (documentation symbol 'function)))
     (when (macro-function symbol)
-      (setf (getf result :macro) nil))
+      (setf (getf result :macro)
+            (documentation symbol 'function)))
     (when (compiler-macro-function symbol)
-      (setf (getf result :compiler-macro) nil))
+      (setf (getf result :compiler-macro)
+            (documentation symbol 'compiler-macro)))
     (when (type-specifier-p symbol)
-      (setf (getf result :type) nil))
+      (setf (getf result :type)
+            (documentation symbol 'type)))
     (when (find-class symbol nil)
-      (setf (getf result :class) nil))
+      (setf (getf result :class)
+            (documentation symbol 'type)))
     result))
 
-(defun function-docstring (function-name)
-  (let* ((definition (fdefinition function-name))
-         (debug-info (sys.int::function-debug-info definition)))
-    (sys.int::debug-info-docstring debug-info)))
 
 ;;;; Multithreading
 
@@ -448,8 +381,8 @@
 
 (defstruct (mailbox (:conc-name mailbox.))
   thread
-  (mutex (mezzano.supervisor:make-mutex))
-  (cvar (mezzano.supervisor:make-condition-variable))
+  (mutex (mezzano.supervisor:make-mutex "slime mailbox lock"))
+  (cvar (mezzano.supervisor:make-condition-variable "slime mailbox cvar"))
   (queue '() :type list))
 
 (defun mailbox (thread)
@@ -458,17 +391,18 @@
   (mezzano.supervisor:with-mutex (*mailbox-lock*)
     ;; Flush forgotten threads.
     (setf *mailboxes*
-          (remove-if-not #'sys.int::weak-pointer-value *mailboxes*))
+          (remove-if-not #'mezzano.extensions:weak-pointer-value
+                         *mailboxes*))
     (loop
        for entry in *mailboxes*
        do
-         (multiple-value-bind (key value livep)
-             (sys.int::weak-pointer-pair entry)
+         (multiple-value-bind (key value)
+             (mezzano.extensions:weak-pointer-pair entry)
            (when (eql key thread)
              (return value)))
        finally
          (let ((mb (make-mailbox :thread thread)))
-           (push (sys.int::make-weak-pointer thread mb) *mailboxes*)
+           (push (mezzano.extensions:make-weak-pointer thread mb) *mailboxes*)
            (return mb)))))
 
 (defimplementation wake-thread (thread)
@@ -576,7 +510,7 @@
 (defimplementation character-completion-set (prefix matchp)
   ;; TODO: Unicode characters too.
   (loop
-     for names in sys.int::*char-name-alist*
+     for names in mezzano.internals::*char-name-alist*
      append
        (loop
           for name in (rest names)
@@ -586,28 +520,40 @@
 ;;;; Inspector
 
 (defmethod emacs-inspect ((o function))
-  (case (sys.int::%object-tag o)
-    (#.sys.int::+object-tag-function+
-     (label-value-line*
-      (:name (sys.int::function-name o))
-      (:arglist (arglist o))
-      (:debug-info (sys.int::function-debug-info o))))
-    (#.sys.int::+object-tag-closure+
+  (case (mezzano.internals::%object-tag o)
+    (#.mezzano.internals::+object-tag-function+
      (append
-      (label-value-line :function (sys.int::%closure-function o))
+      (label-value-line*
+       (:name (mezzano.internals::function-name o))
+       (:arglist (arglist o))
+       (:debug-info (mezzano.internals::function-debug-info o)))
+      `("Constants:" (:newline))
+      (loop for i below (mezzano.internals::function-pool-size o)
+         append (label-value-line i (mezzano.internals::function-pool-object o i)))
+      `("Code:" (:newline)
+                ,(with-output-to-string (*standard-output*)
+                   (let ((*print-lines* nil))
+                     (disassemble o))))))
+    (#.mezzano.internals::+object-tag-closure+
+     (append
+      (label-value-line :function (mezzano.internals::%closure-function o))
       `("Closed over values:" (:newline))
       (loop
-         for i below (sys.int::%closure-length o)
-         append (label-value-line i (sys.int::%closure-value o i)))))
+         for i below (mezzano.internals::%closure-length o)
+         append (label-value-line i (mezzano.internals::%closure-value o i)))))
     (t
      (call-next-method))))
 
-(defmethod emacs-inspect ((o sys.int::weak-pointer))
-  (label-value-line*
-   (:key (sys.int::weak-pointer-key o))
-   (:value (sys.int::weak-pointer-value o))))
+(defmethod emacs-inspect ((o mezzano.extensions:weak-pointer))
+  (multiple-value-bind (key value livep)
+      (mezzano.extensions:weak-pointer-pair o)
+    (if livep
+        '("Dead")
+        (label-value-line*
+         (:key key)
+         (:value value)))))
 
-(defmethod emacs-inspect ((o sys.int::function-reference))
+(defmethod emacs-inspect ((o mezzano.internals::function-reference))
   (label-value-line*
-   (:name (sys.int::function-reference-name o))
-   (:function (sys.int::function-reference-function o))))
+   (:name (mezzano.internals::function-reference-name o))
+   (:function (mezzano.internals::function-reference-function o))))

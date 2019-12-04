@@ -3412,7 +3412,7 @@ Return NIL if LIST is circular."
     ("Rehash threshold" (hash-table-rehash-threshold ht)))
    (let ((weakness (hash-table-weakness ht)))
      (when weakness
-       (label-value-line "Weakness:" weakness)))
+       (label-value-line "Weakness" weakness)))
    (unless (zerop (hash-table-count ht))
      `((:action "[clear hashtable]" 
                 ,(lambda () (clrhash ht))) (:newline)

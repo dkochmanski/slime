@@ -329,8 +329,8 @@
 
 ;;;; Multithreading
 
-;; FIXME: This should be a weak table.
-(defvar *thread-ids-for-emacs* (make-hash-table))
+;; Weak :KEY-OR-VALUE as this contains both id->thread and thread->id mappings.
+(defvar *thread-ids-for-emacs* (make-hash-table :weakness :key-or-value))
 (defvar *next-thread-id-for-emacs* 0)
 (defvar *thread-id-for-emacs-lock* (mezzano.supervisor:make-mutex
                                     "SWANK thread ID table"))
@@ -377,7 +377,8 @@
   (mezzano.supervisor:terminate-thread thread))
 
 (defvar *mailbox-lock* (mezzano.supervisor:make-mutex "mailbox lock"))
-(defvar *mailboxes* (list))
+;; This must be weak so that dead threads aren't held on to forever.
+(defvar *mailboxes* (make-hash-table :weakness :key))
 
 (defstruct (mailbox (:conc-name mailbox.))
   thread
@@ -387,23 +388,12 @@
 
 (defun mailbox (thread)
   "Return THREAD's mailbox."
-  ;; Use weak pointers to avoid holding on to dead threads forever.
   (mezzano.supervisor:with-mutex (*mailbox-lock*)
-    ;; Flush forgotten threads.
-    (setf *mailboxes*
-          (remove-if-not #'mezzano.extensions:weak-pointer-value
-                         *mailboxes*))
-    (loop
-       for entry in *mailboxes*
-       do
-         (multiple-value-bind (key value)
-             (mezzano.extensions:weak-pointer-pair entry)
-           (when (eql key thread)
-             (return value)))
-       finally
-         (let ((mb (make-mailbox :thread thread)))
-           (push (mezzano.extensions:make-weak-pointer thread mb) *mailboxes*)
-           (return mb)))))
+    (let ((entry (gethash thread *mailboxes*)))
+      (when (not entry)
+        (setf entry (make-mailbox :thread thread)
+              (gethash thread *mailboxes*) entry))
+      entry)))
 
 (defimplementation wake-thread (thread)
   ;; WAKE-THREAD is currently only called via INTERRUPT-THREAD by
@@ -504,6 +494,19 @@
            (multiple-value-prog1
                (funcall function)
              (assert (eql (recursive-lock-depth lock) 0)))))))
+
+;;;; Weak datastructures
+
+(defimplementation make-weak-key-hash-table (&rest args)
+  (apply #'make-hash-table :weakness :key args))
+
+(defimplementation make-weak-value-hash-table (&rest args)
+  "Like MAKE-HASH-TABLE, but weak w.r.t. the values."
+  (apply #'make-hash-table :weakness :value args))
+
+(defimplementation hash-table-weakness (hashtable)
+  "Return nil or one of :key :value :key-or-value :key-and-value"
+  (mezzano.extensions:hash-table-weakness hashtable))
 
 ;;;; Character names
 

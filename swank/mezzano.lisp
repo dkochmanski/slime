@@ -226,6 +226,9 @@
                                       (macro-function name)))))
                (let ((fn (fdefinition name)))
                  (cond ((typep fn 'mezzano.clos:standard-generic-function)
+                        (let ((location (slot-value fn 'mezzano.clos::source-location)))
+                          (when location
+                            (frob-fn `(defgeneric ,name) location)))
                         (dolist (m (mezzano.clos:generic-function-methods fn))
                           (frob-fn (method-definition-name name m)
                                    (mezzano.clos:method-function m))))
@@ -244,7 +247,37 @@
       (when (and (symbolp name)
                  (macro-function name))
         (frob-fn `(defmacro ,name)
-                 (macro-function name))))
+                 (macro-function name)))
+      (let ((builtin (gethash name mezzano.compiler.backend.x86-64::*builtins*)))
+        (when builtin
+          (frob-fn `(mezzano.compiler.backend.x86-64::define-builtin ,name
+                        ,(mezzano.compiler.backend.x86-64::builtin-lambda-list builtin)
+                      ,(mezzano.compiler.backend.x86-64::builtin-result-list builtin))
+                   (mezzano.compiler.backend.x86-64::builtin-generator builtin))))
+      (let ((xforms (gethash name mezzano.compiler::*transforms*)))
+        (when xforms
+          (dolist (xform xforms)
+            (frob-fn `(mezzano.compiler::define-transform ,name
+                          ,(mapcar #'list
+                                   (mezzano.compiler::transform-lambda-list xform)
+                                   (mezzano.compiler::transform-argument-types xform))
+                          ,(mezzano.compiler::transform-result-type xform))
+                     (mezzano.compiler::transform-body xform)))))
+      (when (symbolp name)
+        (let* ((type-info (mezzano.internals::type-info-for name nil))
+               (expander (and type-info
+                              (mezzano.internals::type-info-type-expander
+                               type-info))))
+          (when expander
+            (frob-fn `(deftype ,name) expander))))
+      (when (symbolp name)
+        (let* ((class (find-class name nil))
+               (location (and class (slot-value class 'mezzano.clos::source-location))))
+          (when location
+            (when (typep class 'standard-class)
+              (frob-fn `(defclass ,name) location))
+            (when (typep class 'structure-class)
+              (frob-fn `(defstruct ,name) location))))))
     result))
 
 ;;;; XREF

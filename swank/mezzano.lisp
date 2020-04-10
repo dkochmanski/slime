@@ -136,6 +136,11 @@
     (pop *current-backtrace*)
     (funcall debugger-loop-fn)))
 
+(defimplementation call-with-debugger-hook (hook fun)
+  (let ((mezzano.debug:*global-debugger* (lambda (cond) (funcall hook cond nil)))
+        (*debugger-hook* hook))
+    (funcall fun)))
+
 (defimplementation compute-backtrace (start end)
   (subseq *current-backtrace* start end))
 

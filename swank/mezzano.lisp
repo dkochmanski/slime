@@ -224,6 +224,30 @@
      for (dspec location) in (mezzano.debug:list-callees function-name)
      collect (list dspec (mezzano-location->swank-location location))))
 
+;;;; Trace
+
+(defimplementation toggle-trace (spec)
+  (cond ((and (consp spec)
+              (eql (first spec) :defgeneric))
+         ;; Tracing a generic function and all methods
+         (cond ((member spec (eval '(trace)) :test #'equal) ;; check if traced
+                (eval `(untrace ,spec))
+                (format nil "~S is now untraced." spec))
+               (t
+                (eval `(trace :methods t ,spec))
+                (format nil "~S and all methods are now traced." spec))))
+        ((or (symbolp spec)
+             (and (consp spec)
+                  (member (first spec) '(setf mezzano.extensions:cas))))
+         (cond ((member spec (eval '(trace)) :test #'equal) ;; check if traced
+                (eval `(untrace ,spec))
+                (format nil "~S is now untraced." spec))
+               (t
+                (eval `(trace ,spec))
+                (format nil "~S is now traced." spec))))
+        (t
+         (format nil "Unsupported trace specifier ~S." spec))))
+
 ;;;; Documentation
 
 (defimplementation arglist (name)

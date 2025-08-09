@@ -141,6 +141,9 @@ CONTRIBS is a list of contrib packages to load. If `nil', use
 (defvar slime-protocol-version nil)
 (setq slime-protocol-version slime-version)
 
+(defun slime-process-active-p (process)
+  (memq (process-status process) '(open run)))
+
 
 ;;;; Customize groups
 ;;
@@ -528,7 +531,7 @@ information."
 
 (defun slime-modeline-state-string (conn)
   "Return a string possibly describing CONN's state."
-  (cond ((not (eq (process-status conn) 'open))
+  (cond ((not (slime-process-active-p conn))
          (format " %s" (process-status conn)))
         ((let ((pending (length (slime-rex-continuations conn)))
                (sldbs (length (sldb-buffers conn))))
@@ -1670,7 +1673,7 @@ Signal an error if there's no connection."
           ((not conn)
            (or (slime-auto-start)
                (error "Not connected.")))
-          ((not (eq (process-status conn) 'open))
+          ((not (slime-process-active-p conn))
            (error "Connection closed."))
           (t conn))))
 
@@ -1856,7 +1859,7 @@ This is automatically synchronized from Lisp.")
 (defun slime-insert-inferior-lisp-output (string)
   (let ((slime-dispatching-connection slime-inferior-lisp-connected))
     (when (and slime-dispatching-connection
-               (eq (process-status slime-dispatching-connection) 'open))
+               (slime-process-active-p slime-dispatching-connection))
       (funcall slime-terminal-output-function string)))
   string)
 
@@ -1981,7 +1984,7 @@ Return nil if there's no process object for the connection."
 (defun slime-background-activities-enabled-p ()
   (and (let ((con (slime-current-connection)))
          (and con
-              (eq (process-status con) 'open)))
+              (slime-process-active-p con)))
        (or (not (slime-busy-p))
            (not slime-inhibit-pipelining))))
 
@@ -2164,7 +2167,7 @@ or nil if nothing suitable can be found.")
              (inhibit-quit nil)
              (conn (slime-connection)))
          (while t
-           (unless (eq (process-status conn) 'open)
+           (unless (slime-process-active-p conn)
              (error "Lisp connection closed unexpectedly"))
            (accept-process-output nil 0.01)))))))
 
@@ -6450,7 +6453,7 @@ was called originally."
             (format fstring " " "--" "----" "----" "---" "----"))
     (setf slime-net-processes
           (cl-remove-if-not (lambda (conn)
-                              (eq (process-status conn) 'open))
+                              (slime-process-active-p conn))
                             slime-net-processes))
     (dolist (p (reverse slime-net-processes))
       (when (eq default p) (setf default-pos (point)))

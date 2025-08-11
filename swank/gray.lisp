@@ -29,6 +29,14 @@
       stream-line-column
       stream-read-char-no-hang
 
+      fundamental-binary-output-stream
+      stream-write-byte
+      stream-write-sequence
+
+      fundamental-binary-input-stream
+      stream-read-byte
+      stream-read-sequence
+
       #+sbcl stream-file-position))
     nil)
 
